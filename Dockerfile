@@ -20,7 +20,7 @@ RUN git clone --depth 1 --revision=${GTFSCLEAN_GIT_REF} https://github.com/publi
 
 # golang:1-alpine sets $GOPATH to /go
 RUN --mount=type=cache,id=go-build,target=/go \
-	set -e; \
+	set -eux -o pipefail; \
 	[[ "$TARGETARCH" = 'arm64' && -n "$TARGETVARIANT" ]] && export GOARM="$TARGETVARIANT"; \
 	env GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build \
 	&& ls -lh gtfsclean \
