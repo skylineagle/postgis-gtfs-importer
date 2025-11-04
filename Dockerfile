@@ -5,6 +5,11 @@ FROM golang:1-alpine AS gtfsclean
 
 WORKDIR /app
 
+# https://docs.docker.com/engine/reference/builder/#automatic-platform-args-in-the-global-scope
+ARG TARGETOS
+ARG TARGETARCH
+ARG TARGETVARIANT
+
 # https://github.com/public-transport/gtfsclean
 # kept up-to-date by Renovate Bot
 ARG GTFSCLEAN_GIT_REF=8a1a1ee8d37e57afb238302691574b6bae3f681b
@@ -15,7 +20,9 @@ RUN git clone --depth 1 --revision=${GTFSCLEAN_GIT_REF} https://github.com/publi
 
 # golang:1-alpine sets $GOPATH to /go
 RUN --mount=type=cache,id=go-build,target=/go \
-	env GOOS=linux GOARCH=arm64 GOARM=v8 go build \
+	set -e; \
+	[[ "$TARGETARCH" = 'arm64' && -n "$TARGETVARIANT" ]] && export GOARM="$TARGETVARIANT"; \
+	env GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build \
 	&& ls -lh gtfsclean \
 	&& file gtfsclean \
 	&& ./gtfsclean --help 2>/dev/null
