@@ -254,6 +254,7 @@ const importGtfsAtomically = async (cfg) => {
 			PGDATABASE: dbName,
 			GTFS_TMP_DIR: tmpDir,
 			GTFS_IMPORTER_VERBOSE: importScriptVerbose ? 'true' : 'false',
+			GTFS_FEED_DIGEST: feedDigest,
 		}
 		if (schemaName !== null) {
 			_importEnv.GTFS_IMPORTER_SCHEMA = schemaName
