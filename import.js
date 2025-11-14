@@ -227,12 +227,14 @@ const importGtfsAtomically = async (cfg) => {
 		}
 
 		const importedAt = (Date.now() / 1000 | 0)
+		const oldDbName = formatDbName({
+			databaseNamePrefix,
+			importedAt,
+			feedDigest,
+		})
+		logger.debug(`old db name: "${oldDbName}"`)
 		const dbName = 'postgres'
-		//  formatDbName({
-		// 	databaseNamePrefix,
-		// 	importedAt,
-		// 	feedDigest,
-		// })
+
 		if (prevImport?.feedDigest === feedDigest) {
 			result.importSkipped = true
 			logger.info('GTFS feed digest has not changed, skipping import')
