@@ -3,8 +3,6 @@
 docker run --rm -it \
 	-v $PWD/gtfs-tmp:/tmp/gtfs \
 	-v $PWD/preprocess.sh:/etc/gtfs/preprocess.sh \
-	-v $PWD/custom-download.sh:/importer/custom-download.sh \
-	-e 'GTFS_DOWNLOAD_SCRIPT=/importer/custom-download.sh' \
 	-e 'GTFS_DOWNLOAD_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' \
 	-e 'GTFS_IMPORTER_SCHEMA=public' \
 	-e 'GTFS_IMPORTER_DB_PREFIX=gtfs' \
@@ -14,4 +12,4 @@ docker run --rm -it \
 	-e 'PGDATABASE=postgres' \
 	-e 'PGUSER=postgres.oxelinxseckxpdjpkpzf' \
 	-e 'PGPASSWORD=autoto-sandbox' \
-	ghcr.io/mobidata-bw/postgis-gtfs-importer:v5
+	ghcr.io/skylineagle/postgis-gtfs-importer:v5
