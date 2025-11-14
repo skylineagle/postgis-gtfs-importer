@@ -26,4 +26,5 @@ curl-mirror \
 	--tmp-prefix "$zip_path.mirror-" \
 	"$gtfs_url" "$zip_path" \
 	-- \
+    -k \
 	-H "User-Agent: $ua"
