@@ -247,7 +247,7 @@ const importGtfsAtomically = async (cfg) => {
 		}
 
 		logger.debug(`creating database "${dbName}"`)
-		await dbMngmtClient.query(pgFormat('CREATE DATABASE %I', dbName))
+		// await dbMngmtClient.query(pgFormat('CREATE DATABASE %I', dbName))
 
 		logger.info(`importing data into "${dbName}"`)
 		const _importEnv = {
