@@ -3,7 +3,6 @@ name: build & publish Docker image
 on:
   push:
     branches:
-      - v5
       - main
 
 jobs:
