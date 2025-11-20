@@ -4,7 +4,6 @@ import { spawn } from "node:child_process";
 import { onExit } from "signal-exit";
 import _pg from "pg";
 const { Client } = _pg;
-import pgFormat from "pg-format";
 import { ok } from "node:assert";
 
 const DIGEST_LENGTH = 6;
