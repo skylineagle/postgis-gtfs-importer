@@ -10,5 +10,6 @@ docker run --rm -it \
 	-e 'PGDATABASE=postgres' \
 	-e 'PGUSER=postgres.iwrvcwhmozqoshvnvadl' \
 	-e 'PGPASSWORD=autoto-sandbox' \
-	gtfs-importer
+	-e "PGOPTIONS=-c statement_timeout=5min -c lock_timeout=10s -c idle_in_transaction_session_timeout=5min" \
+	gtfs-importer-n
 	# ghcr.io/skylineagle/postgis-gtfs-importer:v5

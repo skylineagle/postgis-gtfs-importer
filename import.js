@@ -113,185 +113,185 @@ const importGtfsAtomically = async (cfg) => {
 
 	const client = await connectToMetaDatabase(cfg);
 
+	logger.info("Setting connection timeouts...");
+	await client.query("SET statement_timeout = '5min'");
+	await client.query("SET lock_timeout = '10s'");
+	await client.query("SET idle_in_transaction_session_timeout = '5min'");
+
+	const {
+		rows: [timeouts],
+	} = await client.query(`
+		SHOW statement_timeout;
+	`);
+	logger.info(
+		`Timeouts configured: statement_timeout=${timeouts.statement_timeout}`
+	);
+
+	logger.info("Checking for idle or blocking transactions...");
+	const { rows: problematicConnections } = await client.query(`
+		SELECT pid, state, now() - state_change AS idle_duration, query
+		FROM pg_stat_activity
+		WHERE pid != pg_backend_pid()
+		  AND datname = current_database()
+		  AND (
+		    (state = 'idle in transaction' AND now() - state_change > interval '30 seconds')
+		    OR (state = 'idle' AND now() - state_change > interval '5 minutes')
+		  )
+	`);
+
+	if (problematicConnections.length > 0) {
+		logger.warn(
+			`Found ${problematicConnections.length} problematic connection(s) that may cause lock contention:`
+		);
+		problematicConnections.forEach((conn) => {
+			logger.warn(
+				`  PID ${conn.pid} (${conn.state}, idle for ${conn.idle_duration})`
+			);
+		});
+		logger.warn(
+			"If the import fails with lock timeout, manually kill these connections:"
+		);
+		logger.warn(
+			`  SELECT pg_terminate_backend(${problematicConnections[0].pid});`
+		);
+	} else {
+		logger.info("No problematic connections found.");
+	}
+
 	await ensureSuccesfulImportsTableExists({
 		db: client,
 	});
 
+	logger.debug("checking previous imports (before starting transaction)");
+	let { latestSuccessfulImports, allSchemas } = await queryImports({
+		db: client,
+	});
+
+	let prevImport = null;
+	if (latestSuccessfulImports.length > 0) {
+		logger.info(
+			`there are ${
+				latestSuccessfulImports.length
+			} (most recent) successful imports recorded in the bookkeeping DB: ${latestSuccessfulImports.map(
+				(imp) => imp.schemaName
+			)}`
+		);
+		prevImport = latestSuccessfulImports[0];
+	}
+	logger.debug(
+		"all schemas, including old/unfinished imports: " +
+			allSchemas.join(", ")
+	);
+
+	for (let i = 0; i < latestSuccessfulImports.length; i++) {
+		const importRecord = latestSuccessfulImports[i];
+
+		if (!allSchemas.includes(importRecord.schemaName)) {
+			logger.warn(
+				`The "${successfulImportsTableName}" table points to a schema "${importRecord.schemaName}" which does not exist. This indicates either a bug in postgis-gtfs-importer, or that its state has been tampered with!`
+			);
+			latestSuccessfulImports.splice(i, 1);
+			i--;
+		}
+	}
+
+	const zipDigest = await digestFile(zipPath);
+	let feedDigest = zipDigest;
+
+	if (gtfsPostprocessingDPath !== null) {
+		let files = [];
+		try {
+			const allFiles = await readdir(gtfsPostprocessingDPath);
+			files = allFiles.filter((filename) => filename[0] !== ".");
+		} catch (err) {
+			if (err.code !== "ENOENT") {
+				throw err;
+			}
+		}
+
+		if (files.length > 0) {
+			let filesDigest = "";
+			logger.debug(`adding ${files.length} files' hashes to feed_digest`);
+			for (const file of files) {
+				const path = pathJoin(gtfsPostprocessingDPath, file);
+				filesDigest += await digestFile(path);
+			}
+			feedDigest = digestString(feedDigest + filesDigest);
+		}
+	}
+
+	const importedAt = (Date.now() / 1000) | 0;
+	const schemaName = formatSchemaName({
+		importedAt,
+	});
+
+	if (prevImport?.feedDigest === feedDigest) {
+		result.importSkipped = true;
+		logger.info("GTFS feed digest has not changed, skipping import");
+		client.end();
+		return result;
+	}
+	result.newImport = {
+		schemaName,
+		importedAt,
+		feedDigest,
+	};
+
+	logger.info(
+		`importing data into schema "${schemaName}" (schema will be created by gtfs-to-sql)`
+	);
+
+	const _importEnv = {
+		...process.env,
+		...pgEnv,
+		PATH: NPM_BIN_DIR + ":" + process.env.PATH,
+		GTFS_TMP_DIR: tmpDir,
+		GTFS_IMPORTER_VERBOSE: importScriptVerbose ? "true" : "false",
+		GTFS_FEED_DIGEST: feedDigest,
+		GTFS_IMPORTER_SCHEMA: schemaName,
+	};
+	if (gtfstidyBeforeImport !== null) {
+		_importEnv.GTFSTIDY_BEFORE_IMPORT = String(gtfstidyBeforeImport);
+	}
+	if (gtfsPostprocessingDPath !== null) {
+		_importEnv.GTFS_POSTPROCESSING_D_PATH = gtfsPostprocessingDPath;
+	}
+	const _t0Import = performance.now();
+	await pSpawn(pathToImportScript, [], {
+		stdio: [
+			"inherit",
+			connectImportScriptToStdout ? "inherit" : "ignore",
+			"inherit",
+		],
+		env: _importEnv,
+	});
+	result.importDurationMs = performance.now() - _t0Import;
+	logger.debug(
+		`import succeeded in ${Math.round(result.importDurationMs / 1000)}s`
+	);
+
+	logger.info("Starting transaction to record successful import...");
 	await client.query("BEGIN");
 	try {
 		logger.info(
-			`obtaining exclusive lock on "${successfulImportsTableName}", so that only one import can be running`
+			`obtaining exclusive lock on "${successfulImportsTableName}"`
 		);
-		await client.query(
-			pgFormat(
-				"LOCK TABLE public.%I IN EXCLUSIVE MODE NOWAIT",
-				successfulImportsTableName
-			)
-		);
-
-		logger.debug("checking previous imports");
-
-		let { latestSuccessfulImports, allSchemas } = await queryImports({
-			db: client,
-		});
-		let prevImport = null;
-		if (latestSuccessfulImports.length > 0) {
-			logger.info(
-				`there are ${
-					latestSuccessfulImports.length
-				} (most recent) successful imports recorded in the bookkeeping DB: ${latestSuccessfulImports.map(
-					(imp) => imp.schemaName
-				)}`
+		try {
+			await client.query(
+				pgFormat(
+					"LOCK TABLE public.%I IN EXCLUSIVE MODE NOWAIT",
+					successfulImportsTableName
+				)
 			);
-			prevImport = latestSuccessfulImports[0];
-		}
-		logger.debug(
-			"all schemas, including old/unfinished imports: " +
-				allSchemas.join(", ")
-		);
-		for (let i = 0; i < latestSuccessfulImports.length; i++) {
-			const prevImport = latestSuccessfulImports[i];
-
-			if (!allSchemas.includes(prevImport.schemaName)) {
-				logger.warn(
-					`The "${successfulImportsTableName}" table points to a schema "${prevImport.schemaName}" which does not exist. This indicates either a bug in postgis-gtfs-importer, or that its state has been tampered with!`
+		} catch (lockErr) {
+			if (lockErr.code === "55P03") {
+				logger.error(
+					"Could not obtain lock - another import is recording at the same time!"
 				);
-				latestSuccessfulImports.splice(i, 1);
-				i--;
+				throw new Error("Could not obtain lock on bookkeeping table");
 			}
+			throw lockErr;
 		}
-
-		{
-			const schemasToRetain = determineSchemasToRetain(
-				latestSuccessfulImports,
-				allSchemas
-			);
-			ok(
-				Array.isArray(schemasToRetain),
-				"determineSchemasToRetain() must return an array"
-			);
-			logger.debug("schemas to retain: " + schemasToRetain.join(", "));
-			result.retainedSchemas = schemasToRetain;
-
-			for (const schemaName of allSchemas) {
-				if (schemasToRetain.includes(schemaName)) {
-					continue;
-				}
-				const isRecentSuccessfulImport = latestSuccessfulImports.some(
-					(imp) => imp.schemaName === schemaName
-				);
-				if (isRecentSuccessfulImport) {
-					logger.info(
-						`dropping schema "${schemaName}" containing a (recent) successful import`
-					);
-				} else {
-					logger.info(
-						`dropping schema "${schemaName}" containing an older or unfinished import`
-					);
-				}
-
-				try {
-					await client.query(
-						pgFormat("DROP SCHEMA %I CASCADE", schemaName)
-					);
-					result.deletedSchemas.push(schemaName);
-				} catch (err) {
-					if (continueOnFailureDeletingOldSchema) {
-						logger.warn(
-							{
-								error: err,
-								schemaName,
-							},
-							`failed to delete old schema "${schemaName}"`
-						);
-					} else {
-						throw err;
-					}
-				}
-				if (isRecentSuccessfulImport) {
-					await removeSchemaFromLatestSuccessfulImports({
-						db: client,
-						schemaName,
-					});
-				}
-			}
-		}
-
-		const zipDigest = await digestFile(zipPath);
-		let feedDigest = zipDigest;
-
-		if (gtfsPostprocessingDPath !== null) {
-			let files = [];
-			try {
-				const allFiles = await readdir(gtfsPostprocessingDPath);
-				files = allFiles.filter((filename) => filename[0] !== ".");
-			} catch (err) {
-				if (err.code !== "ENOENT") {
-					throw err;
-				}
-			}
-
-			if (files.length > 0) {
-				let filesDigest = "";
-				logger.debug(
-					`adding ${files.length} files' hashes to feed_digest`
-				);
-				for (const file of files) {
-					const path = pathJoin(gtfsPostprocessingDPath, file);
-					filesDigest += await digestFile(path);
-				}
-				feedDigest = digestString(feedDigest + filesDigest);
-			}
-		}
-
-		const importedAt = (Date.now() / 1000) | 0;
-		const schemaName = formatSchemaName({
-			importedAt,
-		});
-
-		if (prevImport?.feedDigest === feedDigest) {
-			result.importSkipped = true;
-			logger.info("GTFS feed digest has not changed, skipping import");
-			return result;
-		}
-		result.newImport = {
-			schemaName,
-			importedAt,
-			feedDigest,
-		};
-
-		logger.debug(`creating schema "${schemaName}"`);
-		await client.query(pgFormat("CREATE SCHEMA %I", schemaName));
-
-		logger.info(`importing data into schema "${schemaName}"`);
-		const _importEnv = {
-			...process.env,
-			...pgEnv,
-			PATH: NPM_BIN_DIR + ":" + process.env.PATH,
-			GTFS_TMP_DIR: tmpDir,
-			GTFS_IMPORTER_VERBOSE: importScriptVerbose ? "true" : "false",
-			GTFS_FEED_DIGEST: feedDigest,
-			GTFS_IMPORTER_SCHEMA: schemaName,
-		};
-		if (gtfstidyBeforeImport !== null) {
-			_importEnv.GTFSTIDY_BEFORE_IMPORT = String(gtfstidyBeforeImport);
-		}
-		if (gtfsPostprocessingDPath !== null) {
-			_importEnv.GTFS_POSTPROCESSING_D_PATH = gtfsPostprocessingDPath;
-		}
-		const _t0Import = performance.now();
-		await pSpawn(pathToImportScript, [], {
-			stdio: [
-				"inherit",
-				connectImportScriptToStdout ? "inherit" : "ignore",
-				"inherit",
-			],
-			env: _importEnv,
-		});
-		result.importDurationMs = performance.now() - _t0Import;
-		logger.debug(
-			`import succeeded in ${Math.round(result.importDurationMs / 1000)}s`
-		);
 
 		logger.info(
 			`marking the import into schema "${schemaName}" as the latest`
@@ -305,29 +305,6 @@ const importGtfsAtomically = async (cfg) => {
 			},
 		});
 
-		if (pathToDsnFile !== null) {
-			const {
-				PGHOST,
-				PGPORT,
-				PGDATABASE,
-				POSTGREST_USER,
-				POSTGREST_PASSWORD,
-			} = process.env;
-			ok(PGHOST, "missing/empty $PGHOST");
-			ok(PGPORT, "missing/empty $PGPORT");
-			ok(PGDATABASE, "missing/empty $PGDATABASE");
-			ok(POSTGREST_USER, "missing/empty $POSTGREST_USER");
-			ok(POSTGREST_PASSWORD, "missing/empty $POSTGREST_PASSWORD");
-
-			const dsn = `gtfs=host=${PGHOST} port=${PGPORT} dbname=${PGDATABASE} options=-c search_path=${schemaName} user=${POSTGREST_USER} password=${POSTGREST_PASSWORD}`;
-			const logDsn = `gtfs=host=${PGHOST} port=${PGPORT} dbname=${PGDATABASE} options=-c search_path=${schemaName} user=${POSTGREST_USER} password=${POSTGREST_PASSWORD.slice(
-				0,
-				2
-			)}…${POSTGREST_PASSWORD.slice(-2)}`;
-			logger.debug(`writing "${logDsn}" into env file ${pathToDsnFile}`);
-			await writeFile(pathToDsnFile, dsn);
-		}
-
 		logger.info(
 			`import succeeded, committing all changes to "${successfulImportsTableName}"!`
 		);
@@ -335,10 +312,107 @@ const importGtfsAtomically = async (cfg) => {
 	} catch (err) {
 		logger.warn("an error occured, rolling back");
 		await client.query("ROLLBACK");
+
+		if (err.message && err.message.includes("lock")) {
+			logger.error(
+				`Lock contention detected. There may be blocking transactions in the database.`
+			);
+			logger.error(
+				`Run this query to find blockers: SELECT pid, state, query FROM pg_stat_activity WHERE state = 'idle in transaction';`
+			);
+		}
+
 		throw err;
-	} finally {
-		client.end();
 	}
+
+	logger.info("Cleaning up old schemas (after successful import)...");
+	const {
+		latestSuccessfulImports: updatedImports,
+		allSchemas: updatedSchemas,
+	} = await queryImports({
+		db: client,
+	});
+
+	const schemasToRetain = determineSchemasToRetain(
+		updatedImports,
+		updatedSchemas
+	);
+	ok(
+		Array.isArray(schemasToRetain),
+		"determineSchemasToRetain() must return an array"
+	);
+	logger.debug(
+		"schemas to retain after import: " + schemasToRetain.join(", ")
+	);
+	result.retainedSchemas = schemasToRetain;
+
+	for (const schemaToDelete of updatedSchemas) {
+		if (schemasToRetain.includes(schemaToDelete)) {
+			continue;
+		}
+		const isRecentSuccessfulImport = updatedImports.some(
+			(imp) => imp.schemaName === schemaToDelete
+		);
+		if (isRecentSuccessfulImport) {
+			logger.info(
+				`dropping schema "${schemaToDelete}" containing a (recent) successful import`
+			);
+		} else {
+			logger.info(
+				`dropping schema "${schemaToDelete}" containing an older or unfinished import`
+			);
+		}
+
+		try {
+			await client.query(
+				pgFormat("DROP SCHEMA %I CASCADE", schemaToDelete)
+			);
+			result.deletedSchemas.push(schemaToDelete);
+		} catch (err) {
+			if (continueOnFailureDeletingOldSchema) {
+				logger.warn(
+					{
+						error: err,
+						schemaName: schemaToDelete,
+					},
+					`failed to delete old schema "${schemaToDelete}"`
+				);
+			} else {
+				throw err;
+			}
+		}
+		if (isRecentSuccessfulImport) {
+			await removeSchemaFromLatestSuccessfulImports({
+				db: client,
+				schemaName: schemaToDelete,
+			});
+		}
+	}
+
+	if (pathToDsnFile !== null) {
+		const {
+			PGHOST,
+			PGPORT,
+			PGDATABASE,
+			POSTGREST_USER,
+			POSTGREST_PASSWORD,
+		} = process.env;
+		ok(PGHOST, "missing/empty $PGHOST");
+		ok(PGPORT, "missing/empty $PGPORT");
+		ok(PGDATABASE, "missing/empty $PGDATABASE");
+		ok(POSTGREST_USER, "missing/empty $POSTGREST_USER");
+		ok(POSTGREST_PASSWORD, "missing/empty $POSTGREST_PASSWORD");
+
+		const dsn = `gtfs=host=${PGHOST} port=${PGPORT} dbname=${PGDATABASE} options=-c search_path=${schemaName} user=${POSTGREST_USER} password=${POSTGREST_PASSWORD}`;
+		const logDsn = `gtfs=host=${PGHOST} port=${PGPORT} dbname=${PGDATABASE} options=-c search_path=${schemaName} user=${POSTGREST_USER} password=${POSTGREST_PASSWORD.slice(
+			0,
+			2
+		)}…${POSTGREST_PASSWORD.slice(-2)}`;
+		logger.debug(`writing "${logDsn}" into env file ${pathToDsnFile}`);
+		await writeFile(pathToDsnFile, dsn);
+	}
+
+	client.end();
 
 	logger.debug("done!");
 	return result;

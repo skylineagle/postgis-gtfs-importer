@@ -54,7 +54,7 @@ const pSpawn = (path, args = [], opts = {}) => {
 };
 
 const formatSchemaName = ({ importedAt }) => {
-	return `gtfs-${importedAt}`;
+	return `gtfs_${importedAt}`;
 };
 
 const getPgConfig = async (cfg) => {
@@ -165,7 +165,7 @@ const queryImports = async (cfg) => {
 				imported_at,
 				feed_digest
 			FROM public.${successfulImportsTableName}
-			WHERE schema_name LIKE 'gtfs-%'
+			WHERE schema_name LIKE 'gtfs\_%'
 			ORDER BY imported_at DESC
 		`);
 		latestSuccessfulImports = _rows.map((row) => ({
@@ -187,7 +187,7 @@ const queryImports = async (cfg) => {
 			SELECT
 				nspname AS schema_name
 			FROM pg_catalog.pg_namespace
-			WHERE nspname LIKE 'gtfs-%'
+			WHERE nspname LIKE 'gtfs\_%'
 			ORDER BY nspname ASC
 		`);
 		allSchemas = _rows.map((row) => row.schema_name);

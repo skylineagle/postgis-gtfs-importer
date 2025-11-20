@@ -129,7 +129,7 @@ gtfs-to-sql -d "${gtfs_to_sql_args[@]}" \
 	--postgrest \
 	"$gtfs_path/"*.txt \
 	| zstd | sponge | zstd -d \
-	| psql -b -v 'ON_ERROR_STOP=1' "${psql_args[@]}"
+	| psql -b -v 'ON_ERROR_STOP=1' -v 'statement_timeout=5min' "${psql_args[@]}"
 
 if [ -d "$postprocessing_d_path" ]; then
 	print_bold "Running custom post-processing scripts in $postprocessing_d_path."
@@ -138,7 +138,7 @@ if [ -d "$postprocessing_d_path" ]; then
 	for file in "$postprocessing_d_path/"*; do
 		ext="${file##*.}"
 		if [ "$ext" = "sql" ]; then
-			psql -b -1 -v 'ON_ERROR_STOP=1' --set=SHELL="$SHELL" "${psql_args[@]}" \
+			psql -b -1 -v 'ON_ERROR_STOP=1' -v 'statement_timeout=5min' --set=SHELL="$SHELL" "${psql_args[@]}" \
 				-f "$file"
 		else
 			"$file" "$gtfs_path"
