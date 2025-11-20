@@ -7,8 +7,12 @@ on:
 
 jobs:
   lint-test:
-    name: lint & test
-    uses: "./.github/workflows/lint-test.yml"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun run lint
 
   build-publish:
     name: build & publish Docker image
