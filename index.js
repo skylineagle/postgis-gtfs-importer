@@ -1,3 +1,4 @@
+/* eslint-disable no-useless-escape */
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { spawn } from "node:child_process";
