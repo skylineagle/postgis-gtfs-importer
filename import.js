@@ -434,6 +434,23 @@ const importGtfsAtomically = async (cfg) => {
 				"Import succeeded, but PostgREST settings were not updated. You may need to update them manually."
 			);
 		}
+
+		logger.info("Granting permissions to Supabase roles...");
+		try {
+			await grantSupabasePermissions({
+				logger,
+				db: client,
+				schemaName: schemaName,
+			});
+			logger.info("Successfully granted permissions to Supabase roles");
+		} catch (err) {
+			logger.warn(
+				`Failed to grant Supabase permissions: ${err.message}`
+			);
+			logger.warn(
+				"Import succeeded, but permissions were not granted. You may need to grant them manually."
+			);
+		}
 	}
 
 	client.end();
@@ -522,6 +539,53 @@ const updateSupabasePostgrestSettings = async (cfg) => {
 	const updatedSettings = await patchResponse.json();
 	logger.debug("PostgREST settings updated successfully");
 	return updatedSettings;
+};
+
+const grantSupabasePermissions = async (cfg) => {
+	const { logger, db, schemaName } = cfg;
+	ok(db, "missing/empty cfg.db");
+	ok(schemaName, "missing/empty cfg.schemaName");
+
+	logger.debug(`Granting permissions on schema ${schemaName} to anon, authenticated, service_role`);
+
+	await db.query(
+		pgFormat("GRANT USAGE ON SCHEMA %I TO anon, authenticated, service_role", schemaName)
+	);
+
+	await db.query(
+		pgFormat("GRANT ALL ON ALL TABLES IN SCHEMA %I TO anon, authenticated, service_role", schemaName)
+	);
+
+	await db.query(
+		pgFormat("GRANT ALL ON ALL ROUTINES IN SCHEMA %I TO anon, authenticated, service_role", schemaName)
+	);
+
+	await db.query(
+		pgFormat("GRANT ALL ON ALL SEQUENCES IN SCHEMA %I TO anon, authenticated, service_role", schemaName)
+	);
+
+	await db.query(
+		pgFormat(
+			"ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA %I GRANT ALL ON TABLES TO anon, authenticated, service_role",
+			schemaName
+		)
+	);
+
+	await db.query(
+		pgFormat(
+			"ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA %I GRANT ALL ON ROUTINES TO anon, authenticated, service_role",
+			schemaName
+		)
+	);
+
+	await db.query(
+		pgFormat(
+			"ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA %I GRANT ALL ON SEQUENCES TO anon, authenticated, service_role",
+			schemaName
+		)
+	);
+
+	logger.debug("Permissions granted successfully");
 };
 
 export { importGtfsAtomically };
