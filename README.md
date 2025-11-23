@@ -53,11 +53,44 @@ You can configure access to the PostgreSQL by passing the [standard `PG*` enviro
 
 If you run with `GTFSTIDY_BEFORE_IMPORT=false`, [gtfsclean](https://github.com/public-transport/gtfsclean) (a fork of [gtfstidy](https://github.com/patrickbr/gtfstidy)) will not be used.
 
+### PostgREST role management
+
+By default, `gtfs-to-sql` will not create PostgREST roles (`web_anon`, `postgrest`). If you need these roles created (for self-hosted PostgREST setups), set `GTFS_IMPORTER_POSTGREST=true`.
+
+**Note:** When using Supabase, do **not** set this flag, as Supabase manages PostgREST roles and you won't have permission to reassign objects owned by them.
+
 ### writing a DSN file
 
 If you set `$PATH_TO_DSN_FILE` to a file path, the importer will also write a [PostgreSQL key/value connection string (DSN)](https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING-KEYWORD-VALUE) to that path. The DSN will include the `search_path` option set to the latest schema. Note that you must also provide `$POSTGREST_USER` & `$POSTGREST_PASSWORD` in this case.
 
 This feature is intended to be used with [PgBouncer](https://pgbouncer.org) for "dynamic" routing of PostgreSQL clients to the schema containing the latest GTFS import.
+
+### Updating Supabase PostgREST settings
+
+If you're using Supabase and want to automatically update PostgREST settings to include the new schema in `db_schema` and `db_extra_search_path`, set the following environment variables:
+
+```shell
+export SUPABASE_PROJECT_REF='your-project-ref'
+export SUPABASE_ACCESS_TOKEN='your-access-token'
+```
+
+After a successful import, the importer will automatically:
+
+1. Fetch current PostgREST settings
+2. Add the new schema to both `db_schema` and `db_extra_search_path` (if not already present)
+3. Update the settings via Supabase API
+
+For example, if your current settings are:
+
+- `db_schema`: `public, graphql_public`
+- `db_extra_search_path`: `public, graphql_public`
+
+After importing schema `gtfs_1732107600`, they will become:
+
+- `db_schema`: `public, graphql_public, gtfs_1732107600`
+- `db_extra_search_path`: `public, graphql_public, gtfs_1732107600`
+
+**Note:** If the API update fails, the import will still succeed, but you'll need to update PostgREST settings manually.
 
 ### Breaking Changes
 

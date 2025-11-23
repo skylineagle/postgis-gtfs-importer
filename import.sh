@@ -121,15 +121,20 @@ if [ "$verbose" = false ]; then
 	gtfs_to_sql_args+=('--silent')
 fi
 
+gtfs_to_sql_postgrest_flag=""
+if [ "${GTFS_IMPORTER_POSTGREST:-false}" = "true" ]; then
+	gtfs_to_sql_postgrest_flag="--postgrest"
+fi
+
 gtfs-to-sql -d "${gtfs_to_sql_args[@]}" \
 	--trips-without-shape-id --lower-case-lang-codes \
 	--stops-location-index \
 	--import-metadata \
 	--schema "${GTFS_IMPORTER_SCHEMA:-public}" \
-	--postgrest \
+	${gtfs_to_sql_postgrest_flag} \
 	"$gtfs_path/"*.txt \
 	| zstd | sponge | zstd -d \
-	| psql -b -v 'ON_ERROR_STOP=1' -v 'statement_timeout=5min' "${psql_args[@]}"
+	| psql -b -v 'ON_ERROR_STOP=1' -v 'statement_timeout=0' "${psql_args[@]}"
 
 if [ -d "$postprocessing_d_path" ]; then
 	print_bold "Running custom post-processing scripts in $postprocessing_d_path."
@@ -138,7 +143,7 @@ if [ -d "$postprocessing_d_path" ]; then
 	for file in "$postprocessing_d_path/"*; do
 		ext="${file##*.}"
 		if [ "$ext" = "sql" ]; then
-			psql -b -1 -v 'ON_ERROR_STOP=1' -v 'statement_timeout=5min' --set=SHELL="$SHELL" "${psql_args[@]}" \
+			psql -b -1 -v 'ON_ERROR_STOP=1' -v 'statement_timeout=0' --set=SHELL="$SHELL" "${psql_args[@]}" \
 				-f "$file"
 		else
 			"$file" "$gtfs_path"

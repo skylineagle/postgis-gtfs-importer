@@ -47,6 +47,8 @@ const importGtfsAtomically = async (cfg) => {
 		determineSchemasToRetain,
 		continueOnFailureDeletingOldSchema,
 		gtfsPostprocessingDPath,
+		supabaseProjectRef,
+		supabaseAccessToken,
 	} = {
 		logger: console,
 		downloadScriptVerbose: true,
@@ -74,6 +76,8 @@ const importGtfsAtomically = async (cfg) => {
 		gtfsPostprocessingDPath:
 			process.env.GTFS_POSTPROCESSING_D_PATH ||
 			"/etc/gtfs/postprocessing.d",
+		supabaseProjectRef: process.env.SUPABASE_PROJECT_REF || null,
+		supabaseAccessToken: process.env.SUPABASE_ACCESS_TOKEN || null,
 		...cfg,
 	};
 	ok(pathToImportScript, "missing/empty cfg.pathToImportScript");
@@ -114,9 +118,9 @@ const importGtfsAtomically = async (cfg) => {
 	const client = await connectToMetaDatabase(cfg);
 
 	logger.info("Setting connection timeouts...");
-	await client.query("SET statement_timeout = '5min'");
+	await client.query("SET statement_timeout = '0'");
 	await client.query("SET lock_timeout = '10s'");
-	await client.query("SET idle_in_transaction_session_timeout = '5min'");
+	await client.query("SET idle_in_transaction_session_timeout = '30min'");
 
 	const {
 		rows: [timeouts],
@@ -412,10 +416,112 @@ const importGtfsAtomically = async (cfg) => {
 		await writeFile(pathToDsnFile, dsn);
 	}
 
+	if (supabaseProjectRef !== null && supabaseAccessToken !== null) {
+		logger.info("Updating Supabase PostgREST settings...");
+		try {
+			await updateSupabasePostgrestSettings({
+				logger,
+				projectRef: supabaseProjectRef,
+				accessToken: supabaseAccessToken,
+				newSchema: schemaName,
+			});
+			logger.info("Successfully updated Supabase PostgREST settings");
+		} catch (err) {
+			logger.warn(
+				`Failed to update Supabase PostgREST settings: ${err.message}`
+			);
+			logger.warn(
+				"Import succeeded, but PostgREST settings were not updated. You may need to update them manually."
+			);
+		}
+	}
+
 	client.end();
 
 	logger.debug("done!");
 	return result;
+};
+
+const updateSupabasePostgrestSettings = async (cfg) => {
+	const { logger, projectRef, accessToken, newSchema } = cfg;
+	ok(projectRef, "missing/empty cfg.projectRef");
+	ok(accessToken, "missing/empty cfg.accessToken");
+	ok(newSchema, "missing/empty cfg.newSchema");
+
+	const url = `https://api.supabase.com/v1/projects/${projectRef}/postgrest`;
+
+	logger.debug(`Fetching current PostgREST settings from ${url}`);
+	const getResponse = await fetch(url, {
+		method: "GET",
+		headers: {
+			Authorization: `Bearer ${accessToken}`,
+			"Content-Type": "application/json",
+		},
+	});
+
+	if (!getResponse.ok) {
+		const errorText = await getResponse.text();
+		throw new Error(
+			`Failed to fetch PostgREST settings: ${getResponse.status} ${getResponse.statusText} - ${errorText}`
+		);
+	}
+
+	const currentSettings = await getResponse.json();
+
+	if (!currentSettings.db_schema || !currentSettings.db_extra_search_path) {
+		logger.debug(
+			"PostgREST settings already include the new schema, skipping update"
+		);
+		return currentSettings;
+	}
+
+	const currentDbSchema = currentSettings.db_schema;
+	const currentDbExtraSearchPath = currentSettings.db_extra_search_path;
+
+	logger.debug(`Current db_schema: ${currentDbSchema}`);
+	logger.debug(`Current db_extra_search_path: ${currentDbExtraSearchPath}`);
+
+	const schemaList = currentDbSchema.split(",").map((s) => s.trim());
+	const extraSearchPathList = currentDbExtraSearchPath
+		.split(",")
+		.map((s) => s.trim())
+		.filter((s) => s !== "");
+
+	if (!schemaList.includes(newSchema)) {
+		schemaList.push(newSchema);
+	}
+	if (!extraSearchPathList.includes(newSchema)) {
+		extraSearchPathList.push(newSchema);
+	}
+
+	const updatedDbSchema = schemaList.join(", ");
+	const updatedDbExtraSearchPath = extraSearchPathList.join(", ");
+
+	logger.debug(`Updated db_schema: ${updatedDbSchema}`);
+	logger.debug(`Updated db_extra_search_path: ${updatedDbExtraSearchPath}`);
+
+	const patchResponse = await fetch(url, {
+		method: "PATCH",
+		headers: {
+			Authorization: `Bearer ${accessToken}`,
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({
+			db_schema: updatedDbSchema,
+			db_extra_search_path: updatedDbExtraSearchPath,
+		}),
+	});
+
+	if (!patchResponse.ok) {
+		const errorText = await patchResponse.text();
+		throw new Error(
+			`Failed to update PostgREST settings: ${patchResponse.status} ${patchResponse.statusText} - ${errorText}`
+		);
+	}
+
+	const updatedSettings = await patchResponse.json();
+	logger.debug("PostgREST settings updated successfully");
+	return updatedSettings;
 };
 
 export { importGtfsAtomically };
